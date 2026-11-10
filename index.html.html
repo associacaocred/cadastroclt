@@ -406,22 +406,58 @@ tailwind.config = { theme: { extend: {
     if (e.key === 'Enter' && e.target.tagName === 'INPUT' && e.target.type !== 'radio') { e.preventDefault(); if (cur < last) $('#next').click(); }
   });
 
-  /* ================= ENVIO (simulado) ================= */
-  $('#form').addEventListener('submit', e => {
+  /* ================= ENVIO ================= */
+  // Cole entre as aspas a URL do Apps Script (veja o passo a passo). Vazio = só simula.
+  const ENDPOINT = 'https://script.google.com/macros/s/AKfycbx3r5GfGi0QmWNjXUgYQ2NUpOvGLN0HX-cRst-eJ_uxCAL2LOG7psvMQsrt7wv7LZqD/exec';
+  const MAX_BYTES = 35e6; // limite do total enviado (em base64)
+
+  const toB64 = blob => new Promise((res, rej) => { const r = new FileReader(); r.onload = () => res(String(r.result).split(',')[1]); r.onerror = rej; r.readAsDataURL(blob); });
+  async function prepare(file) {
+    if (!file.type.startsWith('image/')) return { name: file.name, type: file.type, data: await toB64(file) };
+    try { // reduz fotos grandes do celular para enviar mais rápido
+      const bmp = await createImageBitmap(file), k = Math.min(1, 1600 / Math.max(bmp.width, bmp.height));
+      const c = document.createElement('canvas'); c.width = Math.round(bmp.width * k); c.height = Math.round(bmp.height * k);
+      c.getContext('2d').drawImage(bmp, 0, 0, c.width, c.height);
+      const blob = await new Promise(r => c.toBlob(r, 'image/jpeg', 0.82));
+      return { name: file.name.replace(/\.[^.]+$/, '') + '.jpg', type: 'image/jpeg', data: await toB64(blob) };
+    } catch (_) { return { name: file.name, type: file.type, data: await toB64(file) }; }
+  }
+  function fail(msg) {
+    const a = $('#alertBox'); a.textContent = msg; a.classList.remove('hidden');
+    a.scrollIntoView({ behavior: calm ? 'auto' : 'smooth', block: 'center' }); a.focus();
+    const b = $('#send'); b.disabled = false; b.textContent = 'Enviar cadastro';
+  }
+  function showSuccess() {
+    $('#form').classList.add('hidden'); $('#rail').classList.add('hidden');
+    const ok = $('#success'); ok.classList.remove('hidden'); ok.focus({ preventScroll: true });
+    scrollTo({ top: 0, behavior: calm ? 'auto' : 'smooth' });
+  }
+
+  $('#form').addEventListener('submit', async e => {
     e.preventDefault();
     const bad = validate(cur);
     if (bad.length) { banner(bad); focusField(bad[0].f); return; }
     const send = $('#send'); send.disabled = true; send.textContent = 'Enviando…';
-    // Para enviar de verdade: monte um FormData com os campos e os arquivos de `store` e faça fetch('/sua-api', { method: 'POST', body })
-    setTimeout(() => {
-      const data = {};
-      new FormData(e.target).forEach((v, k) => { data[k] = v; });
-      Object.entries(store).forEach(([n, arr]) => { data[n] = arr.map(f => f.name).join(', '); });
-      console.log('Cadastro (simulação):', data);
-      $('#form').classList.add('hidden'); $('#rail').classList.add('hidden');
-      const ok = $('#success'); ok.classList.remove('hidden'); ok.focus({ preventScroll: true });
-      scrollTo({ top: 0, behavior: calm ? 'auto' : 'smooth' });
-    }, 900);
+    $('#alertBox').classList.add('hidden');
+    const campos = {}; new FormData(e.target).forEach((v, k) => { campos[k] = v; });
+    try {
+      if (ENDPOINT) {
+        const arquivos = [];
+        for (const [campo, arr] of Object.entries(store)) for (const f of arr) arquivos.push({ campo, ...(await prepare(f)) });
+        if (arquivos.reduce((t, a) => t + a.data.length, 0) > MAX_BYTES) return fail('Os arquivos estão grandes demais. Remova o vídeo ou envie fotos em vez de vídeo e tente de novo.');
+        // Sem cabeçalho Content-Type de propósito: evita bloqueio do navegador (CORS).
+        const res = await fetch(ENDPOINT, { method: 'POST', body: JSON.stringify({ campos, arquivos }) });
+        const out = await res.json();
+        if (!out.ok) throw new Error(out.erro || 'Falha no servidor');
+      } else {
+        console.log('Cadastro (simulação):', campos, Object.fromEntries(Object.entries(store).map(([n, a]) => [n, a.map(f => f.name)])));
+        await new Promise(r => setTimeout(r, 900));
+      }
+      showSuccess();
+    } catch (err) {
+      console.error(err);
+      fail('Não foi possível enviar agora. Confira a internet e toque em “Enviar cadastro” de novo. Suas respostas continuam preenchidas.');
+    }
   });
 
   render();
